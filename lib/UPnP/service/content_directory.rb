@@ -1,3 +1,6 @@
+require 'open3'
+require 'uri'
+
 require 'rubygems'
 require 'UPnP/service'
 
@@ -115,16 +118,24 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   add_variable 'SystemUpdateID',            'ui4',    nil, nil, true # 2.5.20
   add_variable 'ContainerUpdateIDs',        'string', nil, nil, true # 2.5.21
 
+  def initialize(*args)
+    @directories = []
+
+    super
+  end
+
   def on_init
     @SystemUpdateID = 0
-    @root = '/Users/drbrain/Pictures'
 
+    @object_count = 0
     @objects = {}
-    @objects[0] = @root
-
     @parents = {}
-    @parents[0] = -1
+
+    add_object 'root', -1
+    WEBrick::HTTPUtils::DefaultMimeTypes['mp3'] = 'audio/mpeg'
   end
+
+  # :section: ContentServer implementation
 
   ##
   # Allows the caller to incrementally browse the hierarchy of the content
@@ -161,28 +172,79 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     [nil, @SystemUpdateID]
   end
 
-  def children_result(object_id)
-    object = @objects[object_id]
+  # :section: Support implementation
 
-    children = Dir[File.join(object, '*')]
+  ##
+  # Adds object +name+ to the directory tree under +parent+
+
+  def add_object(name, parent)
+    object_id = @object_count
+    @object_count += 1
+
+    @objects[object_id] = name
+    @objects[name] = object_id
+
+    @parents[object_id] = parent
+
+    object_id
+  end
+
+  ##
+  # Adds +directory+ as a path searched by the content server
+
+  def add_directory(directory)
+    return self if @directories.include? directory
+
+    add_object directory, 0
+    @directories << directory
+
+    self
+  end
+
+  def children_result(object_id)
+    object = get_object object_id
+
+    children = if object_id == 0 then
+                 @directories
+               else
+                 Dir[File.join(object, '*')]
+               end
 
     result = make_result do |xml|
       children.each do |child|
-        stat = File.stat child
-        @objects[stat.ino] = child
-        @parents[stat.ino] = object_id
+        child_id = get_object child, object_id
 
-        result_object xml, child, stat.ino, File.basename(child)
+        result_object xml, child, child_id, File.basename(child)
       end
     end
 
     [children.length, children.length, result]
   end
 
+  def get_object(name, parent_id = nil)
+    if @objects.key? name then
+      @objects[name]
+    elsif parent_id.nil? then
+      raise Error, "object #{name} does not exist"
+    else
+      add_object name, parent_id
+    end
+  end
+
+  def get_parent(object_id)
+    if @parents.key? object_id then
+      @parents[object_id]
+    else
+      raise Error, "invalid object id #{object_id}"
+    end
+  end
+
   def item_class(mime_type)
     case mime_type
     when /^image/ then
       'object.item.imageItem'
+    when /^audio/ then
+      'object.item.audioItem'
     else
       puts "unhandled mime type #{mime_type}"
       'object.item'
@@ -204,10 +266,10 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   end
 
   def metadata_result(object_id)
-    object = @objects[object_id]
-    parent = @parents[object_id]
+    object = get_object object_id
+    parent = get_parent object_id
 
-    title = object == 0 ? 'root' : File.basename(object)
+    title = File.basename object
 
     make_result do |xml|
       result_object xml, object, object_id, title
@@ -217,25 +279,53 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   def mount_extra(http_server)
     super
 
-    path = File.join service_path, 'root'
+    @directories.each do |root|
+      root_id = get_object root
+      path = File.join service_path, root_id.to_s
 
-    http_server.mount path, WEBrick::HTTPServlet::FileHandler, @root
+      http_server.mount path, WEBrick::HTTPServlet::FileHandler, root
+    end
   end
 
-  def resource(xml, object, mime_type)
+  def resource(xml, object, mime_type, stat)
     info = nil
     url = nil
 
     case mime_type
-    when 'image/jpeg' then
-      info = [
-        'http-get', '*', mime_type,
-        'DLNA.ORG_PN=JPEG_LRG;DLNA.ORG_OP=01;DLNA.org_CI=0'
-      ].join ':'
-      url = resource_url object
+    when /^audio\/(.*)/ then
+      pn = case $1
+           when 'mpeg' then
+             'MP3'
+           end
+
+      pn = "DLNA.ORG_PN=#{pn}"
+
+      additional = [pn, 'DLNA.ORG_OP=01', 'DLNA.ORG_CI=0'].compact.join ';'
+
+      info = ['http-get', '*', mime_type, additional]
+    when /^image\/(.*)/ then
+      pn = case $1
+           when 'jpeg' then
+             'JPEG_LRG'
+           end
+
+      pn = "DLNA.ORG_PN=#{pn}"
+
+      additional = [pn, 'DLNA.ORG_OP=01', 'DLNA.ORG_CI=0'].compact.join ';'
+
+      info = ['http-get', '*', mime_type, additional]
     end
 
-    xml.res({ :protocolInfo => info }, url) if info and url
+    if info then
+      url = resource_url object
+
+      attributes = {
+        :protocolInfo => info.join(':'),
+        :size => stat.size,
+      }
+
+      xml.res attributes, URI.escape(url)
+    end
   end
 
   ##
@@ -245,13 +335,18 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   def resource_url(object)
     _, port, host, addr = Thread.current[:WEBrickSocket].addr
 
-    object = object.sub @root, ''
+    root = root_for object
+    root_id = get_object root
 
-    File.join "http://#{addr}:#{port}", service_path, 'root', object
+    object = object.sub root, ''
+
+    File.join "http://#{addr}:#{port}", service_path, root_id.to_s, object
   end
 
   def result_object(xml, object, object_id, title)
-    if File.directory? object then
+    if object_id == 0 then
+      result_container xml, object, object_id, @directories.length, title
+    elsif File.directory? object then
       children = Dir[File.join(object, '*/')].length
 
       result_container xml, object, object_id, children, title
@@ -261,9 +356,7 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   end
 
   def result_container(xml, object, object_id, children, title)
-    parent = @parents[object_id]
-
-    xml.tag! 'container', :id => object_id, :parentID => parent,
+    xml.tag! 'container', :id => object_id, :parentID => get_parent(object_id),
                    :restricted => true, :childCount => children do
       xml.dc :title, title
       xml.upnp :class, 'object.container'
@@ -271,18 +364,34 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   end
 
   def result_item(xml, object, object_id, title)
-    parent = @parents[object_id]
+    inn, out, = Open3.popen3('file', '-bI', object)
+    inn.close
 
-    `file -I #{object}` =~ /(\S+\/\S+)$/
-    mime_type = $1
+    mime_type = out.read.strip
 
-    xml.tag! 'item', :id => object_id, :parentID => parent,
-                   :restricted => true, :childCount => 0 do
+    stat = File.stat object
+
+    xml.tag! 'item', :id => object_id, :parentID => get_parent(object_id),
+             :restricted => true, :childCount => 0 do
       xml.dc :title, title
+      xml.dc :date, stat.ctime.iso8601
       xml.upnp :class, item_class(mime_type)
 
-      resource xml, object, mime_type
+      resource xml, object, mime_type, stat
     end
+  end
+
+  ##
+  # Returns the root for +object_id+
+
+  def root_for(object_id)
+    object_id = get_object object_id unless Integer === object_id
+
+    while (parent_id = get_parent(object_id)) != 0 do
+      object_id = parent_id
+    end
+
+    get_object object_id
   end
 
 end
