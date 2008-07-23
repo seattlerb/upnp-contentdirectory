@@ -46,7 +46,7 @@ See UPnP::Device::MediaServer for an example of usage.
 == REQUIREMENTS:
 
 * A filesystem with files on it
-* A UPnP MediaServer control point
+* A UPnP control point
 
 == INSTALL:
 
