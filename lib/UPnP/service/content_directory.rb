@@ -4,6 +4,9 @@ require 'uri'
 require 'rubygems'
 require 'UPnP/service'
 
+##
+# A UPnP ContentDirectory service.  See upnp.org for specifications.
+
 class UPnP::Service::ContentDirectory < UPnP::Service
 
   VERSION = '1.0'
