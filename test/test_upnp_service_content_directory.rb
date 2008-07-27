@@ -44,6 +44,10 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
     assert result.empty?
   end
 
+  def test_GetSystemUpdateId
+    assert_equal [nil, 0], @cd.GetSystemUpdateID
+  end
+
   def test_add_object
     id = @cd.add_object 'Movies', 0
 
