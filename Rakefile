@@ -9,6 +9,7 @@ Hoe.new 'UPnP-ContentDirectory', UPnP::Service::ContentDirectory::VERSION do |p|
   p.developer 'Eric Hodel', 'drbrain@segment7.net'
 
   p.extra_deps << ['UPnP', '>= 1.1.0']
+  p.extra_deps << ['builder']
 end
 
 # vim: syntax=Ruby

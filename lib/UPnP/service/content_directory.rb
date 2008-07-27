@@ -2,6 +2,7 @@ require 'open3'
 require 'uri'
 
 require 'rubygems'
+require 'builder'
 require 'UPnP/service'
 
 ##
@@ -261,12 +262,11 @@ class UPnP::Service::ContentDirectory < UPnP::Service
 
   def item_class(mime_type)
     case mime_type
-    when /^image/ then 'object.item.imageItem'
     when /^audio/ then 'object.item.audioItem'
+    when /^image/ then 'object.item.imageItem'
+    when /^text/  then 'object.item.textItem'
     when /^video/ then 'object.item.videoItem'
-    else
-      $stderr.puts "unhandled mime type #{mime_type.inspect}"
-      'object.item'
+    else               'object.item'
     end
   end
 

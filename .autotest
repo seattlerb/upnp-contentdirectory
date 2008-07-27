@@ -1,0 +1,10 @@
+# vim: filetype=ruby
+
+Autotest.add_hook :initialize do |at|
+
+  at.add_mapping %r%^lib/UPnP/service/content_directory.rb$% do |_,m|
+    'test/test_upnp_service_content_directory.rb'
+  end
+
+end
+
