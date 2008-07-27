@@ -124,6 +124,9 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   def initialize(*args)
     @directories = []
 
+    @mime_arg = '-I'
+    @mime_arg = '-i' unless mime_type(__FILE__) =~ /^text\//
+
     super
   end
 
@@ -204,6 +207,9 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     self
   end
 
+  ##
+  # Builds a BrowseDirectChildren result for a Browse request of +object_id+
+
   def children_result(object_id)
     object = get_object object_id
 
@@ -224,6 +230,11 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     [children.length, children.length, result]
   end
 
+  ##
+  # Returns the object id for +name+, and adds it to the tree with +parent_id+
+  # if it doesn't exist.  Also accepts an object_id in order to validate the
+  # object's presence in the database.
+
   def get_object(name, parent_id = nil)
     if @objects.key? name then
       @objects[name]
@@ -234,6 +245,9 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     end
   end
 
+  ##
+  # Gets the parent id of +object_id+
+
   def get_parent(object_id)
     if @parents.key? object_id then
       @parents[object_id]
@@ -242,31 +256,39 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     end
   end
 
+  ##
+  # Returns the ContentDirectory class of +mime_type+.
+
   def item_class(mime_type)
     case mime_type
-    when /^image/ then
-      'object.item.imageItem'
-    when /^audio/ then
-      'object.item.audioItem'
+    when /^image/ then 'object.item.imageItem'
+    when /^audio/ then 'object.item.audioItem'
+    when /^video/ then 'object.item.videoItem'
     else
-      puts "unhandled mime type #{mime_type}"
+      $stderr.puts "unhandled mime type #{mime_type.inspect}"
       'object.item'
     end
   end
 
+  ##
+  # Builds a DIDL-Lite result document, yielding a Builder::XmlMarkup object.
+
   def make_result
     result = []
 
-    xml = Builder::XmlMarkup.new :indent => 2, :target => result
-    xml.tag! 'DIDL-Lite',
-             'xmlns' => 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
-             'xmlns:dc' => 'http://purl.org/dc/elements/1.1/',
-             'xmlns:upnp' => 'urn:schemas-upnp-org:metadata-1-0/upnp/' do
-      yield xml
+    builder = Builder::XmlMarkup.new :indent => 2, :target => result
+    builder.tag! 'DIDL-Lite',
+                 'xmlns' => 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
+                 'xmlns:dc' => 'http://purl.org/dc/elements/1.1/',
+                 'xmlns:upnp' => 'urn:schemas-upnp-org:metadata-1-0/upnp/' do
+      yield builder
     end
 
     result.join
   end
+
+  ##
+  # Builds a BrowseMetadata result for a Browse request of +object_id+
 
   def metadata_result(object_id)
     object = get_object object_id
@@ -279,6 +301,18 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     end
   end
 
+  ##
+  # Returns the mime type of +file_name+.
+
+  def mime_type(file_name) # HACK use a real mime magic library
+    inn, out, = Open3.popen3 'file', '-b', @mime_arg, file_name
+    inn.close
+    out.read.strip
+  end
+
+  ##
+  # Adds a FileHandler servlet for each directory.
+
   def mount_extra(http_server)
     super
 
@@ -289,6 +323,10 @@ class UPnP::Service::ContentDirectory < UPnP::Service
       http_server.mount path, WEBrick::HTTPServlet::FileHandler, root
     end
   end
+
+  ##
+  # Builds up a res (resource) element for +object+ in the DIDL-Lite document
+  # +xml+
 
   def resource(xml, object, mime_type, stat)
     info = nil
@@ -315,6 +353,10 @@ class UPnP::Service::ContentDirectory < UPnP::Service
       pn = "DLNA.ORG_PN=#{pn}"
 
       additional = [pn, 'DLNA.ORG_OP=01', 'DLNA.ORG_CI=0'].compact.join ';'
+
+      info = ['http-get', '*', mime_type, additional]
+    when /^video\/(.*)/ then
+      additional = ['DLNA.ORG_OP=01', 'DLNA.ORG_CI=0'].join ';'
 
       info = ['http-get', '*', mime_type, additional]
     end
@@ -346,6 +388,9 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     File.join "http://#{addr}:#{port}", service_path, root_id.to_s, object
   end
 
+  ##
+  # Builds a Result document for +object+ on +xml+
+
   def result_object(xml, object, object_id, title)
     if object_id == 0 then
       result_container xml, object, object_id, @directories.length, title
@@ -358,6 +403,9 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     end
   end
 
+  ##
+  # Builds a Result document for container +object+ on +xml+
+
   def result_container(xml, object, object_id, children, title)
     xml.tag! 'container', :id => object_id, :parentID => get_parent(object_id),
                    :restricted => true, :childCount => children do
@@ -366,11 +414,11 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     end
   end
 
-  def result_item(xml, object, object_id, title)
-    inn, out, = Open3.popen3('file', '-bI', object)
-    inn.close
+  ##
+  # Builds a Result document for +object+ on +xml+
 
-    mime_type = out.read.strip
+  def result_item(xml, object, object_id, title)
+    mime_type = mime_type object
 
     stat = File.stat object
 
