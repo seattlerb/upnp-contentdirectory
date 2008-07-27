@@ -6,5 +6,8 @@ Autotest.add_hook :initialize do |at|
     'test/test_upnp_service_content_directory.rb'
   end
 
+  at.extra_class_map["TestUPnPServiceContentDirectory"] =
+    'test/test_upnp_service_content_directory.rb'
+
 end
 

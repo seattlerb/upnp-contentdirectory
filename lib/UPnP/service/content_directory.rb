@@ -13,6 +13,14 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   VERSION = '1.0'
 
   ##
+  # DLNA profile mappings.  Give me $500 so I can figure out what this means.
+
+  DLNA_PROFILE = {
+    'audio/mpeg' => 'MP3',
+    'image/jpeg' => 'JPEG_LRG',
+  }
+
+  ##
   # Returns the searching capabilities supported by the device
 
   add_action 'GetSearchCapabilities',
@@ -221,7 +229,7 @@ class UPnP::Service::ContentDirectory < UPnP::Service
                end
 
     result = make_result do |xml|
-      children.each do |child|
+      children.sort.each do |child|
         child_id = get_object child, object_id
 
         result_object xml, child, child_id, File.basename(child)
@@ -229,6 +237,24 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     end
 
     [children.length, children.length, result]
+  end
+
+  ##
+  # Thread.current shortcut
+
+  def cur
+    Thread.current
+  end
+
+  ##
+  # Returns a DLNA.ORG_PN value for +mime_type+.  Give me $500 so I can figure
+  # out what this means.
+
+  def dlna_profile(mime_type)
+    profile = DLNA_PROFILE[mime_type]
+    return nil unless profile
+
+    "DLNA.ORG_PN=#{profile}"
   end
 
   ##
@@ -329,48 +355,18 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   # +xml+
 
   def resource(xml, object, mime_type, stat)
-    info = nil
-    url = nil
+    pn = dlna_profile mime_type
 
-    case mime_type
-    when /^audio\/(.*)/ then
-      pn = case $1
-           when 'mpeg' then
-             'MP3'
-           end
+    additional = [pn, 'DLNA.ORG_OP=01', 'DLNA.ORG_CI=0'].compact.join ';'
 
-      pn = "DLNA.ORG_PN=#{pn}"
+    url = resource_url object
 
-      additional = [pn, 'DLNA.ORG_OP=01', 'DLNA.ORG_CI=0'].compact.join ';'
+    attributes = {
+      :protocolInfo => ['http-get', '*', mime_type, additional].join(':'),
+      :size => stat.size,
+    }
 
-      info = ['http-get', '*', mime_type, additional]
-    when /^image\/(.*)/ then
-      pn = case $1
-           when 'jpeg' then
-             'JPEG_LRG'
-           end
-
-      pn = "DLNA.ORG_PN=#{pn}"
-
-      additional = [pn, 'DLNA.ORG_OP=01', 'DLNA.ORG_CI=0'].compact.join ';'
-
-      info = ['http-get', '*', mime_type, additional]
-    when /^video\/(.*)/ then
-      additional = ['DLNA.ORG_OP=01', 'DLNA.ORG_CI=0'].join ';'
-
-      info = ['http-get', '*', mime_type, additional]
-    end
-
-    if info then
-      url = resource_url object
-
-      attributes = {
-        :protocolInfo => info.join(':'),
-        :size => stat.size,
-      }
-
-      xml.res attributes, URI.escape(url)
-    end
+    xml.res attributes, URI.escape(url)
   end
 
   ##
@@ -386,21 +382,6 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     object = object.sub root, ''
 
     File.join "http://#{addr}:#{port}", service_path, root_id.to_s, object
-  end
-
-  ##
-  # Builds a Result document for +object+ on +xml+
-
-  def result_object(xml, object, object_id, title)
-    if object_id == 0 then
-      result_container xml, object, object_id, @directories.length, title
-    elsif File.directory? object then
-      children = Dir[File.join(object, '*/')].length
-
-      result_container xml, object, object_id, children, title
-    else
-      result_item xml, object, object_id, title
-    end
   end
 
   ##
@@ -429,6 +410,21 @@ class UPnP::Service::ContentDirectory < UPnP::Service
       xml.upnp :class, item_class(mime_type)
 
       resource xml, object, mime_type, stat
+    end
+  end
+
+  ##
+  # Builds a Result document for +object+ on +xml+
+
+  def result_object(xml, object, object_id, title)
+    if object_id == 0 then
+      result_container xml, object, object_id, @directories.length, title
+    elsif File.directory? object then
+      children = Dir[File.join(object, '*')].length
+
+      result_container xml, object, object_id, children, title
+    else
+      result_item xml, object, object_id, title
     end
   end
 
