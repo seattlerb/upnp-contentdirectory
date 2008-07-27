@@ -130,23 +130,31 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   add_variable 'SystemUpdateID',            'ui4',    nil, nil, true # 2.5.20
   add_variable 'ContainerUpdateIDs',        'string', nil, nil, true # 2.5.21
 
-  def initialize(*args)
+  attr_reader :system_update_id
+
+  def on_init
     @directories = []
 
+    @mime_types = {}
     @mime_arg = '-I'
     @mime_arg = '-i' unless mime_type(__FILE__) =~ /^text\//
 
-    super
-  end
+    @system_update_id = 0
 
-  def on_init
-    @SystemUpdateID = 0
-
-    @object_count = 0
+    # object_id => object and object => object_id (bidirectional)
     @objects = {}
+    @object_count = 0
+
+    # object_id => UpdateID
+    @update_ids = Hash.new 0
+
+    # object_id => mtime
+    @mtimes = Hash.new 0
+
+    # object_id => parent
     @parents = {}
 
-    add_object 'root', -1
+    add_object 'Root', -1
     WEBrick::HTTPUtils::DefaultMimeTypes['mp3'] = 'audio/mpeg'
   end
 
@@ -161,7 +169,6 @@ class UPnP::Service::ContentDirectory < UPnP::Service
              sort_criteria)
     filter = filter.split ','
     object_id = object_id.to_i
-    update_id = 0
 
     case browse_flag
     when 'BrowseMetadata' then
@@ -175,6 +182,8 @@ class UPnP::Service::ContentDirectory < UPnP::Service
       raise "unknown BrowseFlag #{browse_flag}"
     end
 
+    update_id = @update_ids[object_id]
+
     [nil, result, number_returned, total_matches, update_id]
   end
 
@@ -184,7 +193,7 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   # instead of subscribing to events.
 
   def GetSystemUpdateID
-    [nil, @SystemUpdateID]
+    [nil, @system_update_id]
   end
 
   # :section: Support implementation
@@ -193,6 +202,9 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   # Adds object +name+ to the directory tree under +parent+
 
   def add_object(name, parent)
+    object_id = @objects[name]
+    return object_id if object_id
+
     object_id = @object_count
     @object_count += 1
 
@@ -212,6 +224,7 @@ class UPnP::Service::ContentDirectory < UPnP::Service
 
     add_object directory, 0
     @directories << directory
+    @system_update_id += 1
 
     self
   end
@@ -228,22 +241,18 @@ class UPnP::Service::ContentDirectory < UPnP::Service
                  Dir[File.join(object, '*')]
                end
 
-    result = make_result do |xml|
-      children.sort.each do |child|
-        child_id = get_object child, object_id
+    children.sort!
+    children.map! do |child|
+      [add_object(child, object_id), File.basename(child)]
+    end
 
-        result_object xml, child, child_id, File.basename(child)
+    result = make_result do |xml|
+      children.each do |child_id, title|
+        result_object xml, child_id, title
       end
     end
 
     [children.length, children.length, result]
-  end
-
-  ##
-  # Thread.current shortcut
-
-  def cur
-    Thread.current
   end
 
   ##
@@ -318,12 +327,11 @@ class UPnP::Service::ContentDirectory < UPnP::Service
 
   def metadata_result(object_id)
     object = get_object object_id
-    parent = get_parent object_id
 
     title = File.basename object
 
     make_result do |xml|
-      result_object xml, object, object_id, title
+      result_object xml, object_id, title
     end
   end
 
@@ -331,9 +339,16 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   # Returns the mime type of +file_name+.
 
   def mime_type(file_name) # HACK use a real mime magic library
+    mime_type = @mime_types[file_name]
+    return mime_type if mime_type
+
     inn, out, = Open3.popen3 'file', '-b', @mime_arg, file_name
     inn.close
-    out.read.strip
+
+    mime_type = out.read.strip
+    @mime_types[file_name] = mime_type
+
+    mime_type
   end
 
   ##
@@ -385,9 +400,9 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   end
 
   ##
-  # Builds a Result document for container +object+ on +xml+
+  # Builds a Result document for container +object_id+ on +xml+
 
-  def result_container(xml, object, object_id, children, title)
+  def result_container(xml, object_id, children, title)
     xml.tag! 'container', :id => object_id, :parentID => get_parent(object_id),
                    :restricted => true, :childCount => children do
       xml.dc :title, title
@@ -398,7 +413,8 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   ##
   # Builds a Result document for +object+ on +xml+
 
-  def result_item(xml, object, object_id, title)
+  def result_item(xml, object_id, title)
+    object = get_object object_id
     mime_type = mime_type object
 
     stat = File.stat object
@@ -416,15 +432,19 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   ##
   # Builds a Result document for +object+ on +xml+
 
-  def result_object(xml, object, object_id, title)
-    if object_id == 0 then
-      result_container xml, object, object_id, @directories.length, title
+  def result_object(xml, object_id, title)
+    object = get_object object_id
+
+    if 0 == object_id then
+      result_container xml, object_id, @directories.length, title
     elsif File.directory? object then
       children = Dir[File.join(object, '*')].length
 
-      result_container xml, object, object_id, children, title
+      result_container xml, object_id, children, title
+
+      update_mtime object_id
     else
-      result_item xml, object, object_id, title
+      result_item xml, object_id, title
     end
   end
 
@@ -439,6 +459,19 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     end
 
     get_object object_id
+  end
+
+  ##
+  # Updates the mtime and update id for +object_id+
+
+  def update_mtime(object_id)
+    object = get_object object_id
+    mtime = File.stat(object).mtime.to_i
+
+    return unless @mtimes[object_id] < mtime
+
+    @mtimes[object_id] = mtime
+    @update_ids[object_id] += 1
   end
 
 end

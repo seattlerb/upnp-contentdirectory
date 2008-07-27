@@ -31,18 +31,34 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
     Dir.chdir @old_pwd
   end
 
+  def test_Browse_item
+    util_image
+
+    result = @cd.Browse @pictures_id, 'BrowseMetadata', '', 0, 0, ''
+
+    assert_equal nil, result.shift
+    assert_match %r%<DIDL-Lite%, result.shift
+    assert_equal 1, result.shift
+    assert_equal 1, result.shift
+    assert_equal 1, result.shift
+    assert result.empty?
+  end
+
   def test_add_object
     id = @cd.add_object 'Movies', 0
 
     assert_equal 1, id
     assert_equal 'Movies', @cd.get_object(id)
     assert_equal id, @cd.get_object('Movies')
+
+    assert_equal 1, @cd.add_object('Movies', 0)
   end
 
   def test_add_directory
     @cd.add_directory 'Movies'
 
     assert_equal 1, @cd.get_object('Movies')
+    assert_equal 1, @cd.system_update_id
   end
 
   def test_children_result
@@ -238,7 +254,7 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
 
     xml = util_builder
 
-    @cd.result_container xml, 'Music', @music_id, 5, 'Music'
+    @cd.result_container xml, @music_id, 5, 'Music'
 
     expected = [
       ['container',
@@ -255,7 +271,7 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
 
     xml = util_builder
 
-    @cd.result_item xml, @audio_name, @audio_id, 'audio.mp3'
+    @cd.result_item xml, @audio_id, 'audio.mp3'
 
     expected = [
       ['item',
@@ -277,7 +293,7 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
 
     xml = util_builder
 
-    @cd.result_object xml, 'Music', @music_id, 'Music'
+    @cd.result_object xml, @music_id, 'Music'
 
     expected = [
       ['container',
@@ -294,7 +310,7 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
 
     xml = util_builder
 
-    @cd.result_object xml, @audio_name, @audio_id, 'audio.mp3'
+    @cd.result_object xml, @audio_id, 'audio.mp3'
 
     expected = [
       ['item',
@@ -319,7 +335,7 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
 
     xml = util_builder
 
-    @cd.result_object xml, 'root', 0, 'Root'
+    @cd.result_object xml, 0, 'Root'
 
     expected = [
       [ 'container',
@@ -335,6 +351,16 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
     @picture_id = util_image
 
     assert_equal 'Pictures', @cd.root_for(@picture_id)
+  end
+
+  def test_update_mtime
+    util_audio
+
+    update_id = @cd.update_mtime @cd.get_object('Music')
+    assert_equal 1, update_id
+
+    update_id = @cd.update_mtime @cd.get_object('Music')
+    assert_equal nil, update_id
   end
 
   def util_audio
