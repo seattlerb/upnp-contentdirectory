@@ -1,8 +1,10 @@
 require 'open3'
+require 'thread'
 require 'uri'
 
 require 'rubygems'
 require 'builder'
+require 'exifr'
 require 'mp3info'
 require 'UPnP/service'
 
@@ -133,9 +135,11 @@ class UPnP::Service::ContentDirectory < UPnP::Service
 
   attr_reader :system_update_id
   attr_reader :album_art_path
+  attr_reader :thumbnail_path
 
   def on_init
     @directories = []
+    @directories_mutex = Mutex.new
 
     @mime_types = {}
     @mime_arg = '-I'
@@ -146,6 +150,7 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     # object_id => object and object => object_id (bidirectional)
     @objects = {}
     @object_count = 0
+    @object_mutex = Mutex.new
 
     # object_id => UpdateID
     @update_ids = Hash.new 0
@@ -204,31 +209,35 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   # Adds object +name+ to the directory tree under +parent+
 
   def add_object(name, parent)
-    object_id = @objects[name]
-    return object_id if object_id
+    @object_mutex.synchronize do
+      object_id = @objects[name]
+      return object_id if object_id
 
-    object_id = @object_count
-    @object_count += 1
+      object_id = @object_count
+      @object_count += 1
 
-    @objects[object_id] = name
-    @objects[name] = object_id
+      @objects[object_id] = name
+      @objects[name] = object_id
 
-    @parents[object_id] = parent
+      @parents[object_id] = parent
 
-    object_id
+      object_id
+    end
   end
 
   ##
   # Adds +directory+ as a path searched by the content server
 
   def add_directory(directory)
-    return self if @directories.include? directory
+    @directories_mutex.synchronize do
+      return self if @directories.include? directory
 
-    add_object directory, 0
-    @directories << directory
-    @system_update_id += 1
+      add_object directory, 0
+      @directories << directory
+      @system_update_id += 1
 
-    self
+      self
+    end
   end
 
   ##
@@ -243,8 +252,8 @@ class UPnP::Service::ContentDirectory < UPnP::Service
                  Dir[File.join(object, '*')]
                end
 
-    children.sort!
-    children.map! do |child|
+    children = children.sort
+    children = children.map do |child|
       [add_object(child, object_id), File.basename(child)]
     end
 
@@ -367,8 +376,12 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     end
 
     @album_art_path = File.join service_path, 'album_art'
-
     http_server.mount @album_art_path, AlbumArtHandler, self
+
+    if Object.const_defined? :ImageScience then
+      @thumbnail_path = File.join service_path, 'thumbnails'
+      http_server.mount @thumbnail_path, ThumbnailHandler, self
+    end
   end
 
   ##
@@ -399,7 +412,22 @@ class UPnP::Service::ContentDirectory < UPnP::Service
       mins, secs = secs.divmod 60
       hours, mins = mins.divmod 60
 
-      attributes[:duration] = '%d:%0.2d:%0.2d.%0.2d' % [hours, mins, secs, f_secs]
+      attributes[:duration] = '%d:%0.2d:%0.2d.%0.2d' % [
+        hours, mins, secs, f_secs]
+    when EXIFR::JPEG, EXIFR::TIFF then
+      attributes[:resolution] = "#{extra.height}x#{extra.width}"
+
+      case extra.bits_per_sample
+      when Array then
+        bits_per_sample = 0
+        extra.bits_per_sample.each { |b| bits_per_sample += b }
+
+        attributes[:colorDepth] = bits_per_sample
+        attributes[:bitsPerSample] = extra.bits_per_sample.first
+      when Integer then
+        attributes[:colorDepth] = extra.bits if extra.respond_to? :bits
+        attributes[:bitsPerSample] = extra.bits_per_sample
+      end
     end
 
     xml.res attributes, URI.escape(url)
@@ -439,25 +467,65 @@ class UPnP::Service::ContentDirectory < UPnP::Service
     mime_type = mime_type object
 
     stat = File.stat object
+    extra = nil
 
     xml.tag! 'item', :id => object_id, :parentID => get_parent(object_id),
              :restricted => true, :childCount => 0 do
       xml.upnp :class, item_class(mime_type)
 
-      id3 = result_item_id3 xml, object_id, object, title if
-        mime_type == 'audio/mpeg'
+      case mime_type
+      when 'audio/mpeg' then
+        extra = result_item_id3 xml, object_id, object, title, stat
+      when 'image/jpeg', 'image/tiff' then
+        extra = result_item_exif xml, object_id, object, title, stat
+      else
+        xml.dc :title, title
+        xml.dc :date,  stat.ctime.iso8601
+      end
 
-      xml.dc :title, title              unless id3 and id3.tag['title']
-      xml.dc :date,  stat.ctime.iso8601 unless id3 and id3.tag['date']
+      resource xml, object, mime_type, stat, extra
 
-      resource xml, object, mime_type, stat, id3
+      thumbnail xml, object if mime_type =~ /image\//
     end
   end
 
   ##
-  # Adds metadata for +mp3+ to result item +xml+
+  # Adds metadata_result for +image+ from its EXIF tags to result item +xml+
 
-  def result_item_id3(xml, object_id, mp3, title)
+  def result_item_exif(xml, object_id, image, title, stat)
+    mime_type = mime_type image
+    mime_type =~ /image\/(.*)/
+    klass = EXIFR.const_get $1.upcase
+
+    exif = klass.new image
+
+    if exif.date_time_original then
+      xml.dc :date, exif.date_time_original.iso8601
+    else
+      xml.dc :date, stat.ctime.iso8601
+    end
+
+    if exif.image_description then
+      xml.dc :title, exif.image_description
+    else
+      xml.dc :title, title
+    end
+
+    if exif.artist then
+      xml.dc :creator, exif.artist
+      xml.upnp :artist, exif.artist
+    end
+
+    exif
+  rescue EOFError
+    xml.dc :title, title
+    xml.dc :date,  stat.ctime.iso8601
+  end
+
+  ##
+  # Adds metadata for +mp3+ from its ID3 tag to result item +xml+
+
+  def result_item_id3(xml, object_id, mp3, title, stat)
     Mp3Info.open mp3 do |i|
       return false unless i.hastag?
 
@@ -467,7 +535,11 @@ class UPnP::Service::ContentDirectory < UPnP::Service
         xml.dc :title, title
       end
 
-      xml.dc :date, "#{i.tag['year']}-01-01" if i.tag['date']
+      if i.tag['date'] then
+        xml.dc :date, "#{i.tag['year']}-01-01"
+      else
+        xml.dc :date, stat.ctime.iso8601
+      end
 
       if i.tag['artist'] then
         xml.dc :creator, i.tag['artist']
@@ -498,7 +570,10 @@ class UPnP::Service::ContentDirectory < UPnP::Service
       i
     end
   rescue Mp3InfoError
-    false
+    xml.dc :title, title
+    xml.dc :date, stat.ctime.iso8601
+
+    nil
   end
 
   ##
@@ -534,6 +609,27 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   end
 
   ##
+  # Creates a thumbnail resource for +obj+ and adds it to result item +xml+.
+  # Requires ImageScience.
+
+  def thumbnail(xml, object)
+    return unless Object.const_defined? :ImageScience
+
+    additional = 'DLNA.ORG_PN=JPEG_TN;DLNA.ORG_OP=01;DLNA.ORG_CI=0'
+
+    _, port, host, addr = Thread.current[:WEBrickSocket].addr
+
+    url = File.join "http://#{addr}:#{port}", @thumbnail_path, object
+
+    attributes = {
+      :protocolInfo => ['http-get', '*', 'image/jpeg', additional].join(':'),
+      :resolution => '100x100',
+    }
+
+    xml.res attributes, URI.escape(url)
+  end
+
+  ##
   # Updates the mtime and update id for +object_id+
 
   def update_mtime(object_id)
@@ -542,6 +638,7 @@ class UPnP::Service::ContentDirectory < UPnP::Service
 
     return unless @mtimes[object_id] < mtime
 
+    @system_update_id += 1
     @mtimes[object_id] = mtime
     @update_ids[object_id] += 1
   end
@@ -549,4 +646,5 @@ class UPnP::Service::ContentDirectory < UPnP::Service
 end
 
 require 'UPnP/service/content_directory/album_art_handler'
+require 'UPnP/service/content_directory/thumbnail_handler'
 

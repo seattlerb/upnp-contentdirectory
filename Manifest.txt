@@ -5,4 +5,5 @@ README.txt
 Rakefile
 lib/UPnP/service/content_directory.rb
 lib/UPnP/service/content_directory/album_art_handler.rb
+lib/UPnP/service/content_directory/thumbnail_handler.rb
 test/test_upnp_service_content_directory.rb

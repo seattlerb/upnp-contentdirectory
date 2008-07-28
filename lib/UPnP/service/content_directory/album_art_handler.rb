@@ -31,7 +31,7 @@ class UPnP::Service::ContentDirectory::AlbumArtHandler <
 
     if files.length > 0 then
       album_art = files.first
-      return serve_content req, res, album_art
+      return serve_content(req, res, album_art)
     end
 
     Mp3Info.open mp3 do |info|
@@ -60,8 +60,6 @@ class UPnP::Service::ContentDirectory::AlbumArtHandler <
 
   rescue Mp3InfoError
     raise WEBrick::HTTPStatus::NotFound, "object #{mp3} is not an MP3"
-  rescue UPnP::Service::ContentDirectory::Error
-    raise WEBrick::HTTPStatus::NotFound, "object #{mp3} not found"
   end
 
   def serve_content(req, res, album_art)
@@ -70,3 +68,4 @@ class UPnP::Service::ContentDirectory::AlbumArtHandler <
   end
 
 end
+

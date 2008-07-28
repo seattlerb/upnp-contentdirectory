@@ -165,7 +165,7 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
     server = Object.new
     server.instance_variable_set :@args, []
     def server.mount(path, servlet, root)
-      @args = [path, servlet, root]
+      @args << [path, servlet, root]
     end
 
     @cd.add_directory 'Music'
@@ -175,9 +175,12 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
     args = server.instance_variable_get :@args
 
     expected = [
-      '/TestDevice/ContentDirectory/1',
-      WEBrick::HTTPServlet::FileHandler,
-      'Music'
+      ['/TestDevice/ContentDirectory/1', WEBrick::HTTPServlet::FileHandler,
+       'Music'],
+      ['/TestDevice/ContentDirectory/album_art',
+       UPnP::Service::ContentDirectory::AlbumArtHandler, @cd],
+      ['/TestDevice/ContentDirectory/thumbnails',
+       UPnP::Service::ContentDirectory::ThumbnailHandler, @cd],
     ]
 
     assert_equal expected, args
@@ -280,9 +283,9 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
     expected = [
       ['item',
         { :childCount => 0, :parentID => 1, :restricted => true, :id => 2 }],
-      [:dc, :date, File.stat(@audio_name).ctime.iso8601],
       [:upnp, :class, 'object.item'],
       [:dc, :title, 'audio.mp3'],
+      [:dc, :date, File.stat(@audio_name).ctime.iso8601],
       [:res, {
         :protocolInfo => 'http-get:*:regular file:DLNA.ORG_OP=01;DLNA.ORG_CI=0',
         :size => 0 },
@@ -319,9 +322,9 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
     expected = [
       ['item',
         { :childCount => 0, :parentID => 1, :id => 2, :restricted => true }],
-      [:dc, :date, File.stat(@audio_name).ctime.iso8601],
       [:upnp, :class, 'object.item'],
       [:dc, :title, 'audio.mp3'],
+      [:dc, :date, File.stat(@audio_name).ctime.iso8601],
       [:res,
         { :protocolInfo =>
           'http-get:*:regular file:DLNA.ORG_OP=01;DLNA.ORG_CI=0',
@@ -359,12 +362,15 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
 
   def test_update_mtime
     util_audio
+    assert_equal 1, @cd.system_update_id
 
     update_id = @cd.update_mtime @cd.get_object('Music')
     assert_equal 1, update_id
+    assert_equal 2, @cd.system_update_id
 
     update_id = @cd.update_mtime @cd.get_object('Music')
     assert_equal nil, update_id
+    assert_equal 2, @cd.system_update_id
   end
 
   def util_audio
