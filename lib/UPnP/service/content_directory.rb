@@ -3,6 +3,7 @@ require 'uri'
 
 require 'rubygems'
 require 'builder'
+require 'mp3info'
 require 'UPnP/service'
 
 ##
@@ -131,6 +132,7 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   add_variable 'ContainerUpdateIDs',        'string', nil, nil, true # 2.5.21
 
   attr_reader :system_update_id
+  attr_reader :album_art_path
 
   def on_init
     @directories = []
@@ -363,13 +365,17 @@ class UPnP::Service::ContentDirectory < UPnP::Service
 
       http_server.mount path, WEBrick::HTTPServlet::FileHandler, root
     end
+
+    @album_art_path = File.join service_path, 'album_art'
+
+    http_server.mount @album_art_path, AlbumArtHandler, self
   end
 
   ##
   # Builds up a res (resource) element for +object+ in the DIDL-Lite document
   # +xml+
 
-  def resource(xml, object, mime_type, stat)
+  def resource(xml, object, mime_type, stat, extra = nil)
     pn = dlna_profile mime_type
 
     additional = [pn, 'DLNA.ORG_OP=01', 'DLNA.ORG_CI=0'].compact.join ';'
@@ -380,6 +386,21 @@ class UPnP::Service::ContentDirectory < UPnP::Service
       :protocolInfo => ['http-get', '*', mime_type, additional].join(':'),
       :size => stat.size,
     }
+
+    case extra
+    when Mp3Info then
+      attributes[:bitrate] = extra.bitrate * 128 # bytes/s
+      attributes[:sampleFrequency] = extra.samplerate
+      channels = extra.channel_mode == 'Single Channel' ? 1 : 2
+      attributes[:nrAudioChannels] = channels
+
+      secs = extra.length.to_i
+      f_secs = (extra.length - secs) * 100
+      mins, secs = secs.divmod 60
+      hours, mins = mins.divmod 60
+
+      attributes[:duration] = '%d:%0.2d:%0.2d.%0.2d' % [hours, mins, secs, f_secs]
+    end
 
     xml.res attributes, URI.escape(url)
   end
@@ -421,12 +442,63 @@ class UPnP::Service::ContentDirectory < UPnP::Service
 
     xml.tag! 'item', :id => object_id, :parentID => get_parent(object_id),
              :restricted => true, :childCount => 0 do
-      xml.dc :title, title
-      xml.dc :date, stat.ctime.iso8601
       xml.upnp :class, item_class(mime_type)
 
-      resource xml, object, mime_type, stat
+      id3 = result_item_id3 xml, object_id, object, title if
+        mime_type == 'audio/mpeg'
+
+      xml.dc :title, title              unless id3 and id3.tag['title']
+      xml.dc :date,  stat.ctime.iso8601 unless id3 and id3.tag['date']
+
+      resource xml, object, mime_type, stat, id3
     end
+  end
+
+  ##
+  # Adds metadata for +mp3+ to result item +xml+
+
+  def result_item_id3(xml, object_id, mp3, title)
+    Mp3Info.open mp3 do |i|
+      return false unless i.hastag?
+
+      if i.tag['title'] then
+        xml.dc :title, i.tag['title']
+      else
+        xml.dc :title, title
+      end
+
+      xml.dc :date, "#{i.tag['year']}-01-01" if i.tag['date']
+
+      if i.tag['artist'] then
+        xml.dc :creator, i.tag['artist']
+        xml.upnp :artist, i.tag['artist']
+      end
+
+      if i.tag['genre_s'] =~ /\A\((\d+)\)\z/ then
+        xml.upnp :genre, Mp3Info::GENRES[$1.to_i]
+      elsif i.tag['genre_s'] then
+        xml.upnp :genre, i.tag['genre']
+      end
+
+      xml.upnp :album, i.tag['album'] if i.tag['album']
+      xml.upnp :originalTrackNumber, i.tag['tracknum'] if i.tag['tracknum']
+
+      xml.dc :publisher, i.tag['publisher'] if i.tag['publisher']
+
+      if i.tag2.key? 'APIC' then
+        _, port, host, addr = Thread.current[:WEBrickSocket].addr
+        uri = File.join "http://#{addr}:#{port}", @album_art_path, mp3
+
+        xml.upnp :albumArtURI, 
+                 { 'xmlns:dlna' => 'urn:schemas-dlna-org:metadata-1-0',
+                   'dlna:profileID' => 'PNG_TN' },
+                 URI.escape(uri)
+      end
+
+      i
+    end
+  rescue Mp3InfoError
+    false
   end
 
   ##
@@ -475,4 +547,6 @@ class UPnP::Service::ContentDirectory < UPnP::Service
   end
 
 end
+
+require 'UPnP/service/content_directory/album_art_handler'
 

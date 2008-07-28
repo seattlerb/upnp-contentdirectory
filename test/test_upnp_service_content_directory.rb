@@ -280,9 +280,9 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
     expected = [
       ['item',
         { :childCount => 0, :parentID => 1, :restricted => true, :id => 2 }],
-      [:dc, :title, 'audio.mp3'],
       [:dc, :date, File.stat(@audio_name).ctime.iso8601],
       [:upnp, :class, 'object.item'],
+      [:dc, :title, 'audio.mp3'],
       [:res, {
         :protocolInfo => 'http-get:*:regular file:DLNA.ORG_OP=01;DLNA.ORG_CI=0',
         :size => 0 },
@@ -319,9 +319,9 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
     expected = [
       ['item',
         { :childCount => 0, :parentID => 1, :id => 2, :restricted => true }],
-      [:dc, :title, 'audio.mp3'],
       [:dc, :date, File.stat(@audio_name).ctime.iso8601],
       [:upnp, :class, 'object.item'],
+      [:dc, :title, 'audio.mp3'],
       [:res,
         { :protocolInfo =>
           'http-get:*:regular file:DLNA.ORG_OP=01;DLNA.ORG_CI=0',
