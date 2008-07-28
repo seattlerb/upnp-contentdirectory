@@ -2,7 +2,9 @@
 
 require 'rubygems'
 require 'hoe'
-require './lib/UPnP/service/content_directory'
+
+$LOAD_PATH.unshift 'lib'
+require 'UPnP/service/content_directory'
 
 Hoe.new 'UPnP-ContentDirectory', UPnP::Service::ContentDirectory::VERSION do |p|
   p.rubyforge_name = 'seattlerb'
