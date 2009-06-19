@@ -3,17 +3,16 @@
 require 'rubygems'
 require 'hoe'
 
-$LOAD_PATH.unshift 'lib'
-require 'UPnP/service/content_directory'
+Hoe.plugin :perforce
 
-Hoe.new 'UPnP-ContentDirectory', UPnP::Service::ContentDirectory::VERSION do |p|
-  p.rubyforge_name = 'seattlerb'
-  p.developer 'Eric Hodel', 'drbrain@segment7.net'
+Hoe.spec 'UPnP-ContentDirectory' do
+  self.rubyforge_name = 'seattlerb'
+  developer 'Eric Hodel', 'drbrain@segment7.net'
 
-  p.extra_deps << ['UPnP', '>= 1.2.0']
-  p.extra_deps << ['builder', '>= 2.1.2']
-  p.extra_deps << ['ruby-mp3info', '>= 0.6.7']
-  p.extra_deps << ['exifr', '>= 0.10.6']
+  extra_deps << ['UPnP', '~> 1.3.0']
+  extra_deps << ['builder', '>= 2.1.2']
+  extra_deps << ['ruby-mp3info', '>= 0.6.7']
+  extra_deps << ['exifr', '>= 0.10.6']
 end
 
 # vim: syntax=Ruby
