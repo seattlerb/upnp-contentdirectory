@@ -183,6 +183,9 @@ class TestUPnPServiceContentDirectory < Test::Unit::TestCase
        UPnP::Service::ContentDirectory::ThumbnailHandler, @cd],
     ]
 
+    assert_equal expected.map { |dir,| dir },
+                 args.map { |dir,| dir }, "Maybe you're missing image_science"
+
     assert_equal expected, args
   end
 
